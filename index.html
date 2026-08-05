@@ -1,1 +1,546 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Thirsty</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+	:root {
+		--ink: #e8f0f2;
+		--dim: #9db3bb;
+		--accent-dim: #7aa7b5;
+	}
+	* { box-sizing: border-box; }
 
+	html,body {
+		margin: 0;
+		height: 100%;
+		background: #010304;
+		overflow: hidden;
+		font-family: "Avenir Next", "Segoe UI", -apple-system, sans-serif;
+	}
+
+	#stage {
+		position: fixed;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	#frame {
+		position: relative;
+		width: min(92vw, 900px);
+		height: min(86vh, 560px);
+		border: 6px solid #7aa7b5;
+		border-radius: 0;
+		box-shadow:
+			0 0 0 3px #010304,
+			0 0 0 6px #3d545c,
+			0 20px 0 rgba(0,0,0,0.6);
+		overflow: hidden;
+		background: #010304;
+		image-rendering: pixelated;
+	}
+
+	canvas {
+		display: block;
+		width: 100%;
+		height: 100%;
+		image-rendering: pixelated;
+		image-rendering: crisp-edges;
+	}
+
+	.hud {
+		position: absolute;
+		top: 16px;
+		left: 20px;
+		color: var(--ink);
+		pointer-events: none;
+		user-select: none;
+		z-index: 5;
+	}
+	.hud .eyebrow {
+		font-family: "SF Mono", "Roboto Mono", monospace;
+		font-size: 10px;
+		letter-spacing: .28em;
+		color: var(--accent-dim);
+		text-transform: uppercase;
+		margin: 0 0 4px 1px;
+	}
+	.hud h1 {
+		margin: 0;
+		font-size: 22px;
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--ink);
+		text-shadow: 0 2px 18px rgba(0,0,0,0.5);
+	}
+	.hud p {
+		margin: 5px 0 0 1px;
+		font-size: 11.5px;
+		color: var(--dim);
+		max-width: 260px;
+		line-height: 1.5;
+	}
+
+	.depth-hud {
+		position: absolute;
+		top: 16px;
+		right: 20px;
+		z-index: 5;
+		font-family: "SF Mono", "Roboto Mono", monospace;
+		font-size: 11.5px;
+		letter-spacing: .1em;
+		color: var(--ink);
+		background: rgba(1,3,4,0.45);
+		padding: 6px 10px;
+		border: 1px solid rgba(122,167,181,0.25);
+		pointer-events: none;
+		user-select: none;
+		text-transform: uppercase;
+	}
+
+	.controls-hint {
+		position: absolute;
+		bottom: 14px;
+		left: 20px;
+		z-index: 5;
+		font-family: "SF Mono", "Roboto Mono", monospace;
+		font-size: 10.5px;
+		letter-spacing: .08em;
+		color: var(--dim);
+		background: rgba(1,3,4,0.45);
+		padding: 6px 10px;
+		border-radius: 6px;
+		border: 1px solid rgba(122,167,181,0.25);
+		pointer-events: none;
+		user-select: none;
+	}
+	.controls-hint b { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<div id="stage">
+	<div id="frame">
+		<canvas id="gl"></canvas>
+
+		<div class="hud">
+			<div class="eyebrow">bearkirbs weapon</div>
+			<h1>Thirsty</h1>
+			<p>But if I drink. I die</p>
+		</div>
+
+		<div class="depth-hud" id="depthHud">Surface</div>
+
+		<div class="controls-hint"><b>WASD</b> to move · hold <b>S</b> to dive, <b>D</b> toward the wall</div>
+	</div>
+</div>
+
+<script>
+class Program {
+  constructor(gl, { vertex, fragment }) {
+    this.gl = gl;
+    const vs = this.compile(gl.VERTEX_SHADER, vertex);
+    const fs = this.compile(gl.FRAGMENT_SHADER, fragment);
+    this.program = gl.createProgram();
+    gl.attachShader(this.program, vs);
+    gl.attachShader(this.program, fs);
+    gl.linkProgram(this.program);
+    if (!gl.getProgramParameter(this.program, gl.LINK_STATUS))
+      console.log(gl.getProgramInfoLog(this.program));
+    this.uniforms = new Map();
+  }
+  compile(type, source) {
+    const gl = this.gl;
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS))
+      console.log(gl.getShaderInfoLog(shader));
+    return shader;
+  }
+  use() { this.gl.useProgram(this.program); }
+  uniform(name) {
+    if (this.uniforms.has(name)) return this.uniforms.get(name);
+    const loc = this.gl.getUniformLocation(this.program, name);
+    this.uniforms.set(name, loc);
+    return loc;
+  }
+}
+
+class Mesh {
+  constructor(gl, options = {}) {
+    this.gl = gl;
+    this.vao = gl.createVertexArray();
+    this.attributes = {};
+    this.buffers = {};
+    this.vertexCount = 0;
+    gl.bindVertexArray(this.vao);
+    let location = 0;
+    for (const [name, attribute] of Object.entries(options.attributes || {})) {
+      const buffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      const data = attribute.data || [];
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(location, attribute.size, gl.FLOAT, false, 0, 0);
+      this.attributes[name] = { location, size: attribute.size };
+      this.buffers[name] = buffer;
+      this.vertexCount = Math.max(this.vertexCount, data.length / attribute.size);
+      location++;
+    }
+    gl.bindVertexArray(null);
+  }
+  draw(mode = this.gl.TRIANGLES) {
+    const gl = this.gl;
+    gl.bindVertexArray(this.vao);
+    gl.drawArrays(mode, 0, this.vertexCount);
+  }
+}
+
+const VERTEX_SRC = `#version 300 es
+layout(location=0) in vec2 position;
+void main(){ gl_Position = vec4(position, 0.0, 1.0); }
+`;
+
+// 2D side-view pixel-art ocean with a world-space camera that follows the box.
+const FRAGMENT_SRC = `#version 300 es
+precision highp float;
+
+uniform vec2 iResolution;
+uniform float iTime;
+uniform float uHeight;
+uniform float uChop;
+uniform float uSpeed;
+uniform vec2 uCam;      // camera center, world space
+uniform float uViewH;   // half-height of the view, world units
+uniform vec2 uBox;      // box center, world space
+uniform vec2 uBoxSize;  // box half-size, world units
+uniform float uWallX;   // world x of the right-hand wall
+uniform float uFloorY;  // world y of the sea floor
+
+out vec4 fragColor;
+
+float hash(vec2 p){
+	float h = dot(p, vec2(127.1, 311.7));
+	return fract(sin(h) * 43758.5453123);
+}
+float noise(vec2 p){
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	vec2 u = f*f*(3.0-2.0*f);
+	return mix(
+		mix(hash(i),hash(i+vec2(1.0,0.0)), u.x),
+		mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), u.x), u.y) * 2.0 - 1.0;
+}
+
+// world-space y of the water surface at a given world x (baseline sea level = 0)
+// Mostly flat, with occasional wave sets rolling in toward the wall (the "shore").
+float waterSurface(float x){
+	float t = iTime * uSpeed;
+
+	// gentle, near-flat ambient ripple
+	float h = sin(x * 0.22 + t * 0.6) * 0.03 * uHeight;
+	h += noise(vec2(x * 0.5, t * 0.3)) * 0.02 * uHeight;
+
+	// periodic wave sets: a moving band of choppier water sweeps across
+	// every so often, like swell rolling in toward shore
+	float period = 14.0;
+	float phase = mod(t * 0.5, period);
+	float setWidth = 5.0;
+	float setCenter = phase * 6.0 - 10.0; // sweeps across world x over time
+	float setEnv = exp(-pow((x - setCenter) / setWidth, 2.0));
+
+	float chopAmp = 0.22 * uHeight * uChop / 2.8;
+	float freq = 0.9 * uChop;
+	float wave = sin(x * freq - t * 1.6) * chopAmp;
+	wave += noise(vec2(x * freq * 1.6, t * 0.8)) * chopAmp * 0.4;
+
+	h += wave * setEnv;
+
+	return h;
+}
+
+float posterize(float v, float steps){
+	return floor(v * steps) / steps;
+}
+
+void main(){
+	// PIXELATION: snap fragment coords to a coarse grid so everything reads as chunky pixel art
+	const float PIX = 5.0;
+	vec2 pixelCoord = floor(gl_FragCoord.xy / PIX) * PIX + PIX * 0.5;
+	vec2 uv = pixelCoord / iResolution.xy; // 0..1, y=0 bottom, y=1 top
+
+	float aspect = iResolution.x / iResolution.y;
+	vec2 ndc = uv * 2.0 - 1.0;
+	vec2 world = uCam + vec2(ndc.x * uViewH * aspect, ndc.y * uViewH);
+
+	float surf = waterSurface(world.x);
+	surf = posterize(surf, 24.0);
+
+	float depth = surf - world.y; // positive underwater
+	float depthNorm = clamp(depth / 30.0, 0.0, 1.0);
+
+	bool isWall = world.x > uWallX;
+	bool isFloor = world.y < uFloorY;
+
+	vec3 col;
+
+	const vec3 SKY_A = vec3(0.86, 0.56, 0.36); // warm glow near the horizon
+	const vec3 SKY_B = vec3(0.62, 0.42, 0.44);
+	const vec3 SKY_C = vec3(0.36, 0.30, 0.44);
+	const vec3 SKY_D = vec3(0.17, 0.17, 0.33);
+	const vec3 SKY_E = vec3(0.06, 0.07, 0.16); // deep dusk at the top
+
+	const vec3 WATER_A = vec3(0.20, 0.62, 0.58);
+	const vec3 WATER_B = vec3(0.10, 0.34, 0.36);
+	const vec3 WATER_C = vec3(0.05, 0.16, 0.20);
+	const vec3 WATER_D = vec3(0.02, 0.05, 0.08);
+	const vec3 WATER_E = vec3(0.01, 0.02, 0.035);
+
+	if (isFloor) {
+		vec2 cell = floor(vec2(world.x * 2.0, world.y * 2.0));
+		float checker = mod(cell.x + cell.y, 2.0);
+		vec3 sandA = vec3(0.42, 0.36, 0.22);
+		vec3 sandB = vec3(0.33, 0.28, 0.17);
+		col = mix(sandB, sandA, checker);
+		float pebble = hash(floor(vec2(world.x * 5.0, world.y * 5.0)));
+		if (pebble > 0.88) col *= 0.7;
+	} else if (isWall) {
+		vec2 cell = floor(vec2(world.x * 2.0, world.y * 2.0));
+		float checker = mod(cell.x + cell.y, 2.0);
+		vec3 stoneA = vec3(0.30, 0.32, 0.34);
+		vec3 stoneB = vec3(0.22, 0.24, 0.26);
+		vec3 wet = vec3(0.12, 0.18, 0.20);
+		vec3 stone = mix(stoneB, stoneA, checker);
+		stone = mix(stone, wet, step(world.y, surf));
+		vec2 f = fract(vec2(world.x * 2.0, world.y * 2.0));
+		if (f.x < 0.06 || f.y < 0.06) stone *= 0.75;
+		col = stone;
+	} else if (world.y > surf) {
+		// sky is a fixed backdrop painted onto the screen itself - it does not
+		// scroll with the camera or the water, it just sits there behind everything
+		float sk = clamp(ndc.y * 0.5 + 0.5, 0.0, 1.0); // 0 = bottom of screen, 1 = top
+		float band = posterize(sk, 5.0);
+		if (band > 0.79) col = SKY_E;
+		else if (band > 0.59) col = SKY_D;
+		else if (band > 0.39) col = SKY_C;
+		else if (band > 0.19) col = SKY_B;
+		else col = SKY_A;
+	} else {
+		float band = posterize(depthNorm, 5.0);
+		if (band < 0.19) col = WATER_A;
+		else if (band < 0.39) col = WATER_B;
+		else if (band < 0.59) col = WATER_C;
+		else if (band < 0.79) col = WATER_D;
+		else col = WATER_E;
+
+		vec2 causticCell = floor(vec2(world.x * 3.5, world.y * 3.0 - iTime * uSpeed * 0.6));
+		float speck = hash(causticCell);
+		if (speck > 0.86 && depthNorm < 0.6) col += WATER_A * 0.15;
+	}
+
+	// foam line at the surface (skip over solid wall/floor)
+	if (!isWall && !isFloor) {
+		if (world.y >= surf && world.y < surf + 0.18) {
+			col = vec3(0.85, 0.95, 0.95);
+		} else if (world.y >= surf - 0.12 && world.y < surf) {
+			col = mix(col, vec3(0.6, 0.8, 0.82), 0.6);
+		}
+	}
+
+	// --- the box ---
+	vec3 background = col; // whatever is rendered here before the box goes down
+	vec2 d = abs(world - uBox) - uBoxSize;
+	float boxDist = max(d.x, d.y);
+	if (boxDist < 0.0) {
+		vec3 boxColor = vec3(0.80, 0.15, 0.15);
+		if (world.y < surf) {
+			// this part of the box is under the local waterline - let some of
+			// the water sit in front of it, so it reads as behind the water
+			// rather than drawn on top of it
+			float overlayAmt = mix(0.32, 0.55, depthNorm);
+			boxColor = mix(boxColor, background, overlayAmt);
+		}
+		col = boxColor;
+	}
+
+	// a slight tinted overlay that reads more like "water" as you go deeper,
+	// rather than just fading everything to black
+	float fogBand = posterize(depthNorm, 6.0);
+	vec3 deepTint = vec3(0.04, 0.15, 0.17);
+	col = mix(col, deepTint, fogBand * 0.5);
+	col *= mix(1.0, 0.62, fogBand);
+
+	fragColor = vec4(col, 1.0);
+}
+`;
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { antialias: false, powerPreference: 'high-performance' });
+
+if (!gl) {
+	document.body.innerHTML = '<div style="color:#e8f0f2;padding:40px;font-family:sans-serif;">WebGL2 is not available in this browser.</div>';
+} else {
+	const program = new Program(gl, { vertex: VERTEX_SRC, fragment: FRAGMENT_SRC });
+	const fsQuad = new Mesh(gl, {
+		attributes: { position: { data: [-1, -1, 3, -1, -1, 3], size: 2 } }
+	});
+
+	const U = {
+		res: program.uniform('iResolution'),
+		time: program.uniform('iTime'),
+		height: program.uniform('uHeight'),
+		chop: program.uniform('uChop'),
+		speed: program.uniform('uSpeed'),
+		cam: program.uniform('uCam'),
+		viewH: program.uniform('uViewH'),
+		box: program.uniform('uBox'),
+		boxSize: program.uniform('uBoxSize'),
+		wallX: program.uniform('uWallX'),
+		floorY: program.uniform('uFloorY'),
+	};
+
+	function resize() {
+		const frame = document.getElementById('frame');
+		const dpr = Math.min(window.devicePixelRatio || 1, 2);
+		const w = Math.floor(frame.clientWidth * dpr);
+		const h = Math.floor(frame.clientHeight * dpr);
+		if (canvas.width !== w || canvas.height !== h) {
+			canvas.width = w; canvas.height = h;
+			gl.viewport(0, 0, w, h);
+		}
+	}
+	window.addEventListener('resize', resize);
+	resize();
+
+	const params = { height: 1.0, chop: 2.8, speed: 0.8 };
+
+	// World-space layout: sea level baseline is y = 0. A stone wall bounds the
+	// world on the right; a sandy floor bounds it below, so there's a real
+	// bottom to reach if you dive all the way down.
+	const VIEW_H = 6.0;
+	const WALL_X = 20.0;
+	const FLOOR_Y = -26.0;
+
+	const box = {
+		x: 2, y: 9,       // starts above the frame - falls in
+		vx: 0, vy: 0,
+		halfW: 0.5, halfH: 0.5,
+	};
+
+	const cam = { x: box.x, y: 2 };
+
+	const keys = { w:false, a:false, s:false, d:false };
+	window.addEventListener('keydown', e => {
+		const k = e.key.toLowerCase();
+		if (k in keys) { keys[k] = true; e.preventDefault(); }
+	});
+	window.addEventListener('keyup', e => {
+		const k = e.key.toLowerCase();
+		if (k in keys) { keys[k] = false; e.preventDefault(); }
+	});
+
+	function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+	function waterSurfaceJS(x, timeRaw) {
+		const t = timeRaw * params.speed;
+
+		let h = Math.sin(x * 0.22 + t * 0.6) * 0.03 * params.height;
+
+		const period = 14.0;
+		const phase = (t * 0.5) % period;
+		const setWidth = 5.0;
+		const setCenter = phase * 6.0 - 10.0;
+		const setEnv = Math.exp(-Math.pow((x - setCenter) / setWidth, 2.0));
+
+		const chopAmp = 0.22 * params.height * params.chop / 2.8;
+		const freq = 0.9 * params.chop;
+		const wave = Math.sin(x * freq - t * 1.6) * chopAmp;
+
+		h += wave * setEnv;
+		return h;
+	}
+
+	const GRAVITY = -30;
+	const BUOYANCY = 38;
+	const WATER_DRAG = 2.6;
+	const AIR_DRAG = 0.25;
+	const MOVE_FORCE = 18;
+	const CAM_LERP_RATE = 3.0;
+
+	const depthHud = document.getElementById('depthHud');
+
+	const start = performance.now();
+	let lastT = start;
+
+	function frame() {
+		resize();
+		const now = performance.now();
+		const t = (now - start) / 1000;
+		let dt = Math.min((now - lastT) / 1000, 0.033);
+		lastT = now;
+
+		const surf = waterSurfaceJS(box.x, t);
+		const submergedAmount = clamp01((surf - (box.y - box.halfH)) / (box.halfH * 2));
+
+		box.vy += GRAVITY * dt;
+		if (submergedAmount > 0) {
+			box.vy += BUOYANCY * submergedAmount * dt;
+			box.vy *= Math.max(0, 1 - WATER_DRAG * dt);
+			box.vx *= Math.max(0, 1 - WATER_DRAG * dt);
+		} else {
+			box.vy *= Math.max(0, 1 - AIR_DRAG * dt);
+		}
+
+		if (keys.a) box.vx -= MOVE_FORCE * dt;
+		if (keys.d) box.vx += MOVE_FORCE * dt;
+		if (keys.w) box.vy += MOVE_FORCE * dt;
+		if (keys.s) box.vy -= MOVE_FORCE * dt;
+
+		box.x += box.vx * dt;
+		box.y += box.vy * dt;
+
+		// right-hand wall - solid, stops the box
+		if (box.x + box.halfW > WALL_X) {
+			box.x = WALL_X - box.halfW;
+			box.vx = Math.min(0, box.vx);
+		}
+
+		// sea floor - solid, stops the box from falling forever
+		if (box.y - box.halfH < FLOOR_Y) {
+			box.y = FLOOR_Y + box.halfH;
+			box.vy = Math.max(0, box.vy);
+		}
+
+		// camera smoothly follows the box, so diving deeper actually scrolls the view down
+		const camT = 1 - Math.exp(-CAM_LERP_RATE * dt);
+		cam.x += (box.x - cam.x) * camT;
+		cam.y += (box.y - cam.y) * camT;
+
+		const depthM = Math.max(0, Math.round(-box.y));
+		if (depthHud) depthHud.textContent = depthM > 0 ? ('Depth: ' + depthM + 'm') : 'Surface';
+
+		program.use();
+		gl.uniform2f(U.res, canvas.width, canvas.height);
+		gl.uniform1f(U.time, t);
+		gl.uniform1f(U.height, params.height);
+		gl.uniform1f(U.chop, params.chop);
+		gl.uniform1f(U.speed, params.speed);
+		gl.uniform2f(U.cam, cam.x, cam.y);
+		gl.uniform1f(U.viewH, VIEW_H);
+		gl.uniform2f(U.box, box.x, box.y);
+		gl.uniform2f(U.boxSize, box.halfW, box.halfH);
+		gl.uniform1f(U.wallX, WALL_X);
+		gl.uniform1f(U.floorY, FLOOR_Y);
+
+		fsQuad.draw(gl.TRIANGLES);
+		requestAnimationFrame(frame);
+	}
+	frame();
+}
+</script>
+</body>
+</html>
