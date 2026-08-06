@@ -1,7 +1,7 @@
 <!DOCTYPE html> 
 <!--By Arrow-->
 <html>
-	<head> <!--Encoding and viewport--> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Exo"> <title>Thanks Mushy Avocado!!</title> <style> #img { position: absolute; display: none; } * { transition: 1s; } body { width: 100vw; height: 100vh; margin: 0; padding: 0; overflow: hidden; } #game { background-color: white; } </style> </head> <body> <div id="container"> <canvas id="game"></canvas> <img id = "img" src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Yamaha_Saxophone_YAS-62.tif/lossy-page1-250px-Yamaha_Saxophone_YAS-62.tif.jpg" alt="description"></div>
+	<head> <!--Encoding and viewport--> <meta charset="utf-8"> <meta name="viewport" content="width=device-width, initial-scale=1"> <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Exo"> <title>Yay</title> <style> #img { position: absolute; display: none; } * { transition: 1s; } body { width: 100vw; height: 100vh; margin: 0; padding: 0; overflow: hidden; } #game { background-color: white; } </style> </head> <body> <div id="container"> <canvas id="game"></canvas> <img id = "img" src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Yamaha_Saxophone_YAS-62.tif/lossy-page1-250px-Yamaha_Saxophone_YAS-62.tif.jpg" alt="description"></div>
 	
 	<script src = "pixelart.js"></script>
 	<script type="module">
@@ -28,9 +28,256 @@ try {
     let currentLevel = 0;
     let keys = {};
     let blocks = [];
+    //maps a water tile's world x (column) to the world y of that column's surface the topmost water tile above it. Rebuilt in mapSetup().
+    let waterSurfaceByColumn = {};
     const blockSize = 45;
     const tileSprite = typeof gfx !== "undefined" && gfx?.tiles?.A?.yyyy ? gfx.tiles.A.yyyy : null;
     const backdropSprite = typeof gfx !== "undefined" && gfx?.props?.backdrops?.dungeon ? gfx.props.backdrops.dungeon : null;
+    
+
+
+    const waterPalette = {
+        surface: "#eafeff",
+        body: "#1f52b1",
+    };
+
+    let frameTime = 0;
+
+    class LightStreak {
+        constructor(options = {}) {
+            this.x = options.x ?? 0;
+            this.width = options.width ?? 20;
+            this.opacity = options.opacity ?? 0.4;
+            this.color = options.color ?? "#4fc3ff";
+            this.tilt = options.tilt ?? 0;
+            this.swayAmp = options.swayAmp ?? 6;
+            this.swayFreq = options.swayFreq ?? 0.04;
+            this.swaySpeed = options.swaySpeed ?? 0.2;
+            this.swayPhase = options.swayPhase ?? 0;
+        }
+
+        centerAt(depth, t) {
+            return this.x
+                + depth * this.tilt
+                + Math.sin(depth * this.swayFreq + t * this.swaySpeed + this.swayPhase) * this.swayAmp;
+        }
+
+        covers(worldX, depth, t) {
+            return Math.abs(worldX - this.centerAt(depth, t)) < this.width / 2;
+        }
+    }
+    function createLightStreaks(spanWidth, opts) {
+        const streaks = [];
+        let x = -150;
+        while (x < spanWidth + 200) {
+            const width = opts.minWidth + seededRandom() * (opts.maxWidth - opts.minWidth);
+            const gap = opts.minGap + seededRandom() * (opts.maxGap - opts.minGap);
+            streaks.push(new LightStreak({
+                x: x + width / 2,
+                width,
+                opacity: opts.minOpacity + seededRandom() * (opts.maxOpacity - opts.minOpacity),
+                color: opts.palette[Math.floor(seededRandom() * opts.palette.length)],
+                tilt: opts.tilt,
+                swayAmp: opts.minSwayAmp + seededRandom() * (opts.maxSwayAmp - opts.minSwayAmp),
+                swayFreq: opts.minSwayFreq + seededRandom() * (opts.maxSwayFreq - opts.minSwayFreq),
+                swaySpeed: opts.minSwaySpeed + seededRandom() * (opts.maxSwaySpeed - opts.minSwaySpeed),
+                swayPhase: seededRandom() * Math.PI * 2,
+            }));
+            x += width + gap;
+        }
+        return streaks;
+    }
+    let lightStreaksWide = [];
+    let lightStreaksFine = [];
+
+    class LightRipple {
+        constructor(options = {}) {
+            this.x = options.x ?? 0;
+            this.y = options.y ?? 0;
+            this.length = options.length ?? 180;
+            this.thickness = options.thickness ?? 24;
+            this.opacity = options.opacity ?? 0.16;
+            this.color = options.color ?? "#dff6ff";
+            this.speed = options.speed ?? 8;
+            this.frequency = options.frequency ?? 0.03;
+            this.phase = options.phase ?? 0;
+            this.direction = options.direction ?? 1;
+            this.seed = options.seed ?? 0;
+            this.noiseScale = options.noiseScale ?? 0.045;
+            this.driftSpeed = options.driftSpeed ?? 0.3;
+            this.beamWidth = options.beamWidth ?? 1;
+            this.beamHeight = options.beamHeight ?? 1;
+            this.angle = options.angle ?? 0;
+            this.sway = options.sway ?? 0.2;
+            this.penetrationLength = options.penetrationLength ?? 180;
+        }
+
+        noise(x, y) {
+            const value = Math.sin(x * 12.9898 + y * 78.233 + this.seed * 37.719) * 43758.5453123;
+            return value - Math.floor(value);
+        }
+
+        intensityAt(px, py, t) {
+            const travel = (t * this.speed + this.phase) * this.direction;
+            const dx = px - (this.x + travel * 0.65);
+            const dy = py - (this.y + Math.sin(dx * 0.018 + this.phase) * this.thickness * 0.12 + Math.cos(t * 0.0006 + this.seed * 0.002) * 8);
+            const along = dx * Math.cos(this.angle) + dy * Math.sin(this.angle);
+            const across = -dx * Math.sin(this.angle) + dy * Math.cos(this.angle);
+            const band = Math.max(0, 1 - Math.abs(along) / (this.length * 0.5));
+            const widthFalloff = Math.max(0, 1 - Math.abs(across) / (this.thickness * 0.5));
+
+            if (band <= 0 || widthFalloff <= 0) {
+                return 0;
+            }
+
+            const wave = Math.sin(dx * this.frequency + this.phase + travel * this.driftSpeed) * 0.5 + 0.5;
+            const warp = Math.sin(dy * 0.08 + t * 0.12 + this.seed * 0.001) * 0.7
+                + Math.cos(dx * 0.03 + this.seed * 0.0012) * 0.35;
+            const edge = Math.pow(widthFalloff, 0.9);
+            const grain = (this.noise(px * this.noiseScale, py * this.noiseScale + this.seed * 0.0005) + 1) * 0.5;
+            const distanceDown = Math.max(0, py - this.y);
+            const penetration = Math.max(0, 1 - distanceDown / this.penetrationLength);
+            const verticalFade = Math.max(0, penetration * penetration);
+            const base = band * widthFalloff * (0.3 + wave * 0.7) * this.opacity;
+            return Math.max(0, base * (0.4 + grain * 1.1) * edge * (0.7 + warp * 0.35) * verticalFade);
+        }
+
+        drawOverTile(ctx, px, py, cellW, cellH, time) {
+            const intensity = this.intensityAt(px + cellW / 2, py + cellH / 2, time);
+            if (intensity <= 0.002) {
+                return;
+            }
+
+            const beamW = Math.max(cellW * 0.5, cellW * (0.8 + intensity * 2.2) * (0.55 + this.beamWidth * 0.75));
+            const beamH = Math.max(cellH * 0.4, cellH * (0.7 + intensity * 1.8) * (0.55 + this.beamHeight * 0.75));
+            const x = px - (beamW - cellW) * 0.35;
+            const y = py - (beamH - cellH) * 0.25;
+            const distanceDown = Math.max(0, py - this.y);
+            const topFade = Math.max(0, 1 - distanceDown / this.penetrationLength);
+
+            ctx.save();
+            ctx.globalAlpha = Math.min(0.95, intensity * 2.8 * topFade * topFade);
+            ctx.fillStyle = this.color;
+            ctx.translate(x + beamW / 2, y + beamH / 2);
+            ctx.rotate(this.angle + Math.sin(time * 0.0007 + this.phase) * this.sway);
+            ctx.fillRect(-beamW / 2, -beamH / 2, beamW, beamH);
+            ctx.restore();
+        }
+    }
+
+    let rippleSeed = Math.floor(performance.now() * 1000) ^ Math.floor(Math.random() * 0xffffffff);
+
+    function seededRandom() {
+        rippleSeed = (rippleSeed * 1664525 + 1013904223) >>> 0;
+        return rippleSeed / 0x100000000;
+    }
+
+    function createRandomRipples(count = 12) {
+        const ripples = [];
+        const palette = ["#dff6ff", "#e5f9ff", "#c7f1ff", "#a7deff", "#8edcff"];
+
+        for (let i = 0; i < count; i++) {
+            const length = 80 + seededRandom() * 220;
+            const thickness = 10 + seededRandom() * 34;
+            const x = seededRandom() * 1100 - 550;
+            const y = -40 - seededRandom() * 180;
+            const speed = 1.2 + seededRandom() * 5.2;
+            const frequency = 0.008 + seededRandom() * 0.028;
+            const direction = seededRandom() > 0.5 ? 1 : -1;
+            const opacity = 0.06 + seededRandom() * 0.16;
+            const phase = seededRandom() * Math.PI * 2;
+            const beamWidth = 0.45 + seededRandom() * 1.1;
+            const beamHeight = 0.35 + seededRandom() * 1.2;
+            const driftSpeed = 0.08 + seededRandom() * 0.9;
+            const angle = (seededRandom() - 0.5) * Math.PI * 0.45;
+            const sway = 0.04 + seededRandom() * 0.3;
+
+            ripples.push(new LightRipple({
+                x,
+                y,
+                length,
+                thickness,
+                opacity,
+                speed,
+                frequency,
+                phase,
+                direction,
+                seed: seededRandom() * 10000,
+                beamWidth,
+                beamHeight,
+                driftSpeed,
+                angle,
+                sway,
+                penetrationLength: 140 + seededRandom() * 90,
+                color: palette[Math.floor(seededRandom() * palette.length)],
+            }));
+        }
+
+        return ripples;
+    }
+
+    let waterRipples = createRandomRipples(20);
+
+    function drawWaterTile(x, y, w, h, topSurface) {
+        const cols = 9;
+        const rows = 9;
+        const cellW = Math.max(1, Math.floor(w / cols));
+        const cellH = Math.max(1, Math.floor(h / rows));
+        const t = frameTime / 1000;
+        const baseRow = Math.floor(y / cellH);
+
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+
+        for (let row = 0; row < rows; row++) {
+            if (topSurface && row < 2) continue;
+
+            const gy = baseRow + row;
+            const px0 = x, py = y + row * cellH;
+
+            for (let col = 0; col < cols; col++) {
+                const px = px0 + col * cellW;
+
+                if (topSurface && row === 2) {
+                    ctx.globalAlpha = 1;
+                    ctx.fillStyle = waterPalette.surface;
+                    ctx.fillRect(px, py, cellW, cellH);
+                    continue;
+                }
+                const surfaceY = waterSurfaceByColumn[x] ?? y;
+                const depth = py - surfaceY;
+                const fadeDistance = 300;
+                const depthFade = Math.max(0.08, Math.pow(Math.max(0, 1 - depth / fadeDistance), 1.3));
+                ctx.globalAlpha = 0.32 + 0.26 * depthFade;
+                ctx.fillStyle = waterPalette.body;
+                ctx.fillRect(px, py, cellW, cellH);
+                ctx.globalCompositeOperation = "lighter";
+                const cellCenterX = px + cellW / 2;
+
+                const wide = lightStreaksWide.find((s) => s.covers(cellCenterX, gy, t));
+                if (wide) {
+                    ctx.globalAlpha = wide.opacity * depthFade;
+                    ctx.fillStyle = wide.color;
+                    ctx.fillRect(px, py, cellW, cellH);
+                }
+
+                const fine = lightStreaksFine.find((s) => s.covers(cellCenterX, gy, t));
+                if (fine) {
+                    ctx.globalAlpha = fine.opacity * depthFade;
+                    ctx.fillStyle = fine.color;
+                    ctx.fillRect(px, py, cellW, cellH);
+                }
+
+                ctx.globalCompositeOperation = "source-over";
+
+                for (const ripple of waterRipples) {
+                    ripple.drawOverTile(ctx, px, py, cellW, cellH, t);
+                }
+            }
+        }
+
+        ctx.restore();
+    }
 
     function drawBackgroundArt() {
         ctx.save();
@@ -54,21 +301,26 @@ try {
 
     const MAP = [
         [
-            "   ##",
-            "     ##  !",
-            "     ######",
-            "     #!!",
-            "   ##     ",
-            "  ##     #####",
-            "##          %##",
-            "#      @######",
-            "####   #",
-            "   #  !!# #####",
-            "   ######",
-            "   ###", 
-            "   ",
-            "   ",
-            "   !",
+            "  	   ##",
+            "  	   ##  !",
+            "  	   ######",
+            "  	   #!!",
+            "	   ##     ",
+            "	  ##     #####",
+            "	##      @   %##",
+            "	#       ######",
+            "	    #WW##  !!# #####",
+            "	   ##WW##",
+            "	   ##WW#####", 
+            "	 ####WWWWW#####",
+            "      #WWWWWWWW########",
+            "      #WWWWWWWWWW######",
+			"########WWWWWWWWWW#######",
+			"####WWWWWWWWWWWWWWWWW#######",
+			"##WWWWWWWWWWWWWWWWWWWWW#######",
+			"#######WWWWWWWWWWWWWWW######",
+			"#######################",
+			"",
         ],
         [
             "     ",
@@ -209,6 +461,7 @@ try {
         onTramp: false,
         onIce: false,
         onMud: false,
+        inWater: false,
         
         collideX: function(that){
             //first check if the player is touching a block
@@ -284,6 +537,20 @@ try {
             this.inputs.left = (keys[37] || keys[65]);
             this.inputs.right = (keys[39] || keys[68]);
             
+            if (this.inWater) {
+                if (this.inputs.left) {
+                    this.v.x -= this.acceleration * 0.35 * dt;
+                } else if (this.inputs.right) {
+                    this.v.x += this.acceleration * 0.35 * dt;
+                } else {
+                    this.v.x *= 0.94;
+                }
+                this.v.x = constrain(this.v.x, -this.speed * 0.7, this.speed * 0.7);
+                this.x += this.v.x * dt;
+                this.action = "air";
+                return;
+            }
+            
             //vector movement
             if(this.inputs.left && !this.collide.left){
                 this.v.x -= this.acceleration * dt;
@@ -326,6 +593,18 @@ try {
         },
         moveY: function(){
             this.inputs.up = (keys[38] || keys[87]);
+            
+            if (this.inWater) {
+                if (this.inputs.up) {
+                    this.v.y -= this.jumpPow * 0.18 * dt;
+                } else {
+                    this.v.y += this.gravity * 0.12 * dt;
+                }
+                this.v.y *= 0.96;
+                this.y += this.v.y * dt;
+                this.action = "air";
+                return;
+            }
                 
             if (this.inputs.up && this.collide.top) {
                 this.v.y = -this.jumpPow;
@@ -411,6 +690,24 @@ try {
                     //Physics.collideBox.all(player, this);
                     break;
             }
+        }
+    }
+
+    class WaterBlock extends Block {
+        constructor(x, y, w, h) {
+            super(x, y, w, h, "water");
+        }
+
+        isTopSurface() {
+            const above = blocks.find((block) => block.x === this.x && block.y === this.y - blockSize);
+            const aboveIsWater = above?.type === "water";
+            const aboveIsSolid = above && ["block", "ice", "mud", "tramp", "portal", "hazard"].includes(above.type);
+            return !aboveIsWater && !aboveIsSolid;
+        }
+
+        draw() {
+            const topSurface = this.isTopSurface();
+            drawWaterTile(this.x, this.y, this.w, this.h, topSurface);
         }
     }
 
@@ -563,6 +860,8 @@ try {
             this.palette = palette;
             //configuration for light decay and minimum levels
             this.settings = settings;
+            this.playerLightRadius = settings.playerLightRadius ?? 4;
+            this.playerLightStrength = settings.playerLightStrength ?? 0.95;
         }
 
         // Checks if a cell blocks light
@@ -584,17 +883,21 @@ try {
 
             const highestNeighbor = Math.max(left, right, top, bottom);
             // Apply different decay rates depending on whether the light is passing through a solid or air
-            const lightLevel = Math.max(highestNeighbor * (this.isSolid(symbol) ? this.settings.groundDecay : this.settings.airDecay), this.settings.minLevel);
+            const propagatedLight = Math.max(highestNeighbor * (this.isSolid(symbol) ? this.settings.groundDecay : this.settings.airDecay), this.settings.minLevel);
+
+            const playerCellX = Math.floor(player.x / this.grid.size);
+            const playerCellY = Math.floor(player.y / this.grid.size);
+            const dx = Math.abs(x - playerCellX);
+            const dy = Math.abs(y - playerCellY);
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            const playerLight = distance <= this.playerLightRadius
+                ? Math.max(this.settings.minLevel, this.playerLightStrength * (1 - distance / this.playerLightRadius))
+                : 0;
+
             const emission = this.getEmission(symbol);
-            // If cell emits its own light, use that; otherwise, use calculated diffused light
-            if (emission > lightLevel) {
-                //
-                this.data.set(x, y, emission);
-                return emission;
-            } else {
-                this.data.set(x, y, lightLevel);
-                return highestNeighbor; // Do not return the actual calculated light level for the cell. Instead return the highest neighbor, which allows solid blocks adjacent to air to be lit
-            }
+            const lightLevel = Math.max(propagatedLight, playerLight, emission);
+            this.data.set(x, y, lightLevel);
+            return lightLevel;
         }
 
     }
@@ -652,6 +955,9 @@ try {
                     case "&":
                         blocks.push(new Block(j * blockSize, i * blockSize, blockSize, blockSize, "ice"));
                         break;
+					case "W":
+                        blocks.push(new WaterBlock(j * blockSize, i * blockSize, blockSize, blockSize));
+                        break;
                     case "@":
                         player.x = j * blockSize;
                         player.y = i * blockSize;
@@ -673,6 +979,37 @@ try {
         //fetch the width and height of each level in pixels
         lvlSizeX = longestX * blockSize;
         lvlSizeY = MAP[LEVEL].length * blockSize;
+
+        //record the topmost water tile's y for each column, so the light beams know how deep they are and can fade out accordingly.
+        waterSurfaceByColumn = {};
+        for (const block of blocks) {
+            if (block.type !== "water") continue;
+            if (waterSurfaceByColumn[block.x] === undefined || block.y < waterSurfaceByColumn[block.x]) {
+                waterSurfaceByColumn[block.x] = block.y;
+            }
+        }
+
+
+        lightStreaksWide = createLightStreaks(lvlSizeX, {
+            minWidth: 18, maxWidth: 65,
+            minGap: 4, maxGap: 60,
+            minOpacity: 0.16, maxOpacity: 0.55,
+            minSwayAmp: 18, maxSwayAmp: 65,
+            minSwayFreq: 0.01, maxSwayFreq: 0.03,
+            minSwaySpeed: 0.03, maxSwaySpeed: 0.18,
+            maxDrift: 1,
+            palette: ["#3f96da", "#4fc3ff", "#63cdff", "#7fd6ee"],
+        });
+        lightStreaksFine = createLightStreaks(lvlSizeX, {
+            minWidth: 6, maxWidth: 20,
+            minGap: 8, maxGap: 75,
+            minOpacity: 0.3, maxOpacity: 0.95,
+            minSwayAmp: 10, maxSwayAmp: 40,
+            minSwayFreq: 0.018, maxSwayFreq: 0.045,
+            minSwaySpeed: 0.08, maxSwaySpeed: 0.4,
+            maxDrift: 1.5,
+            palette: ["#bff2ff", "#e2fbff", "#9fe6ff", "#d0f6ff"],
+        });
         
         //alert(lvlSizeX)
         //lighting setup
@@ -692,8 +1029,10 @@ try {
             },
         }, {
             airDecay: 0.9,
-            groundDecay: 0,
-            minLevel: 0,
+            groundDecay: 0.7,
+            minLevel: 0.08,
+            playerLightRadius: 5,
+            playerLightStrength: 0.95,
         });
         
     }
@@ -801,6 +1140,8 @@ try {
         dt = (Math.min(dtMs / 1000, 0.1));
         fps = dtMs > 0 ? Math.round(1000 / dtMs) : fps;
         
+        //advance the water ripple animation clock
+        frameTime = now;
         
         drawBackgroundArt();
         
@@ -813,11 +1154,21 @@ try {
         app();
         ctx.save();
         
+        player.inWater = false;
+        for (let i = 0; i < blocks.length; i++) {
+            const block = blocks[i];
+            if (block.type === "water" && edgeCheck(player, block)) {
+                player.inWater = true;
+                break;
+            }
+        }
 
         player.moveX();
         
         for(let i in blocks){
-            let col = player.collideX(blocks[i]);
+            const block = blocks[i];
+            if (block.type === "water") continue;
+            let col = player.collideX(block);
             //only collide with one block a frame
             if(col){
                 break;
@@ -829,7 +1180,9 @@ try {
         player.moveY();
         
         for(let i in blocks){
-            let col = player.collideY(blocks[i]);
+            const block = blocks[i];
+            if (block.type === "water") continue;
+            let col = player.collideY(block);
             //only collide with one block a frame
             if(col){
                 break;
@@ -847,14 +1200,21 @@ try {
 
 
         for (var i = 0; i < blocks.length; i++) {
-            blocks[i].draw();
+            if (blocks[i].type !== "water") {
+                blocks[i].draw();
+            }
         }
-        
-        //before or after the player ?!?
-        updateAndRenderLighting(lighting);
-
 
         player.display();
+
+        // Draw water on top of the player so it looks like they are submerged.
+        for (var i = 0; i < blocks.length; i++) {
+            if (blocks[i].type === "water") {
+                blocks[i].draw();
+            }
+        }
+
+        updateAndRenderLighting(lighting);
 
         if(currentLevel === MAP.length){
             shakes.push(new Shake(100));
@@ -937,25 +1297,3 @@ try {
         <script>/**/</script>
     </body>
 </html>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
