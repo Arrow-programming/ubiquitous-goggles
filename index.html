@@ -449,7 +449,7 @@ try {
         },
         jump: false,
         
-        acceleration: 600,
+        acceleration: 1600,
         friction: 1.1,
         jumpPow: 420,
         gravity: 600,
@@ -593,14 +593,21 @@ try {
         },
         moveY: function(){
             this.inputs.up = (keys[38] || keys[87]);
+            this.inputs.down = (keys[40] || keys[83]);
             
             if (this.inWater) {
                 if (this.inputs.up) {
-                    this.v.y -= this.jumpPow * 0.18 * dt;
+                    // stronger swim up
+                    this.v.y -= this.jumpPow * 0.38 * dt;
+                } else if (this.inputs.down) {
+                    // stronger swim down when holding down
+                    this.v.y += this.jumpPow * 0.6 * dt;
                 } else {
-                    this.v.y += this.gravity * 0.12 * dt;
+                    // slightly stronger natural sinking
+                    this.v.y += this.gravity * 0.18 * dt;
                 }
-                this.v.y *= 0.96;
+                // reduce vertical damping so swimming feels more responsive
+                this.v.y *= 0.985;
                 this.y += this.v.y * dt;
                 this.action = "air";
                 return;
