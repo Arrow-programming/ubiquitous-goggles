@@ -43,6 +43,15 @@ try {
 
     let frameTime = 0;
 
+    const WATER_WAVE = {
+        freq: 0.018,   
+        speed: 0.29,   
+        phaseScale: 0, 
+        
+    };
+	const WATER_LIGHT_ANGLE_DEG = 22;
+    const WATER_TILT_PER_ROW = -Math.tan(WATER_LIGHT_ANGLE_DEG * Math.PI / 180) * (blockSize / 9);
+
     class LightStreak {
         constructor(options = {}) {
             this.x = options.x ?? 0;
@@ -72,16 +81,23 @@ try {
         while (x < spanWidth + 200) {
             const width = opts.minWidth + seededRandom() * (opts.maxWidth - opts.minWidth);
             const gap = opts.minGap + seededRandom() * (opts.maxGap - opts.minGap);
+            const centerX = x + width / 2;
             streaks.push(new LightStreak({
-                x: x + width / 2,
+                x: centerX,
                 width,
                 opacity: opts.minOpacity + seededRandom() * (opts.maxOpacity - opts.minOpacity),
                 color: opts.palette[Math.floor(seededRandom() * opts.palette.length)],
                 tilt: opts.tilt,
-                swayAmp: opts.minSwayAmp + seededRandom() * (opts.maxSwayAmp - opts.minSwayAmp),
-                swayFreq: opts.minSwayFreq + seededRandom() * (opts.maxSwayFreq - opts.minSwayFreq),
-                swaySpeed: opts.minSwaySpeed + seededRandom() * (opts.maxSwaySpeed - opts.minSwaySpeed),
-                swayPhase: seededRandom() * Math.PI * 2,
+                // Fixed (not randomized) so every streak swings the exact same
+                // distance, in the exact same direction, at the exact same time —
+                // that's what makes the whole set read as one sine wave.
+                swayAmp: opts.swayAmp,
+                // Shared frequency/speed across every streak so they all ride the
+                // same sine wave. Phase is a smooth function of x (not random) so
+                // neighboring beams stay in step, like ripples on one connected surface.
+                swayFreq: WATER_WAVE.freq,
+                swaySpeed: WATER_WAVE.speed,
+                swayPhase: centerX * WATER_WAVE.phaseScale,
             }));
             x += width + gap;
         }
@@ -296,6 +312,86 @@ try {
             }
         }
 
+        ctx.restore();
+    }
+
+    const UNDERWATER_DISTORT = {
+        rowHeight: 5,
+        amp: 2,    
+        freq: WATER_WAVE.freq, 
+        speed: WATER_WAVE.speed,
+    };
+    let frameBuffer = null;
+    let frameBufferCtx = null;
+
+    
+    function ensureFrameBuffer(pad) {
+        const neededW = width + pad * 2;
+        if (!frameBuffer || frameBuffer.width !== neededW || frameBuffer.height !== height) {
+            frameBuffer = document.createElement("canvas");
+            frameBuffer.width = neededW;
+            frameBuffer.height = height;
+            frameBufferCtx = frameBuffer.getContext("2d");
+            frameBufferCtx.imageSmoothingEnabled = false;
+        }
+    }
+
+	//build a clip region primarily
+    function applyUnderwaterDistortion() {
+        const waterRects = [];
+        for (const block of blocks) {
+            if (block.type !== "water") continue;
+
+            let rectX = block.x;
+            let rectY = block.y;
+            let rectW = block.w;
+            let rectH = block.h;
+            if (block.isTopSurface && block.isTopSurface()) {
+                const skip = (block.h / 9) * 2;
+                rectY += skip;
+                rectH -= skip;
+            }
+
+            const screenX = rectX - cam.x + shake.x + width / 2;
+            const screenY = rectY - cam.y + shake.y + height / 2;
+            // Skip tiles that are off-screen — keeps the clip path small.
+            if (screenX + rectW < 0 || screenX > width || screenY + rectH < 0 || screenY > height) {
+                continue;
+            }
+            waterRects.push([screenX, screenY, rectW, rectH]);
+        }
+        if (waterRects.length === 0) {
+            return;
+        }
+
+        const pad = Math.ceil(UNDERWATER_DISTORT.amp) + 2;
+        ensureFrameBuffer(pad);
+
+        frameBufferCtx.drawImage(canvas, 0, 0, 1, height, 0, 0, pad, height);
+        frameBufferCtx.drawImage(canvas, 0, 0, width, height, pad, 0, width, height);
+        frameBufferCtx.drawImage(canvas, width - 1, 0, 1, height, pad + width, 0, pad, height);
+		
+		ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.beginPath();
+        for (const [rx, ry, rw, rh] of waterRects) {
+            ctx.rect(rx, ry, rw, rh);
+        }
+        ctx.clip();
+        ctx.imageSmoothingEnabled = false;
+
+        const t = frameTime / 1000;
+        const rowH = UNDERWATER_DISTORT.rowHeight;
+        for (let y = 0; y < height; y += rowH) {
+            const rh = Math.min(rowH, height - y);
+            const wave = Math.sin(y * UNDERWATER_DISTORT.freq + t * UNDERWATER_DISTORT.speed);
+            const shift = Math.round(wave * UNDERWATER_DISTORT.amp);
+            ctx.drawImage(
+                frameBuffer,
+                pad - shift, y, width, rh,
+                0, y, width, rh
+            );
+        }
         ctx.restore();
     }
 
@@ -1005,20 +1101,16 @@ try {
             minWidth: 18, maxWidth: 65,
             minGap: 4, maxGap: 60,
             minOpacity: 0.16, maxOpacity: 0.55,
-            minSwayAmp: 18, maxSwayAmp: 65,
-            minSwayFreq: 0.01, maxSwayFreq: 0.03,
-            minSwaySpeed: 0.03, maxSwaySpeed: 0.18,
-            maxDrift: 1,
+            swayAmp: 70,
+            tilt: WATER_TILT_PER_ROW,
             palette: ["#3f96da", "#4fc3ff", "#63cdff", "#7fd6ee"],
         });
         lightStreaksFine = createLightStreaks(lvlSizeX, {
             minWidth: 6, maxWidth: 20,
             minGap: 8, maxGap: 75,
             minOpacity: 0.3, maxOpacity: 0.95,
-            minSwayAmp: 10, maxSwayAmp: 40,
-            minSwayFreq: 0.018, maxSwayFreq: 0.045,
-            minSwaySpeed: 0.08, maxSwaySpeed: 0.4,
-            maxDrift: 1.5,
+            swayAmp: 40,
+            tilt: WATER_TILT_PER_ROW,
             palette: ["#bff2ff", "#e2fbff", "#9fe6ff", "#d0f6ff"],
         });
         
@@ -1224,6 +1316,11 @@ try {
                 blocks[i].draw();
             }
         }
+
+        // Everything visible so far (background, blocks, player) gets warped
+        // wherever it's inside a water tile. Runs before lighting so the
+        // darkness overlay itself stays crisp on top, undistorted.
+        applyUnderwaterDistortion();
 
         updateAndRenderLighting(lighting);
 
