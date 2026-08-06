@@ -869,6 +869,8 @@ try {
             this.settings = settings;
             this.playerLightRadius = settings.playerLightRadius ?? 4;
             this.playerLightStrength = settings.playerLightStrength ?? 0.95;
+            // how quickly cells update to new light values (0 = no change, 1 = instant)
+            this.smoothing = settings.lightSmooth ?? 0.14;
         }
 
         // Checks if a cell blocks light
@@ -902,9 +904,11 @@ try {
                 : 0;
 
             const emission = this.getEmission(symbol);
-            const lightLevel = Math.max(propagatedLight, playerLight, emission);
-            this.data.set(x, y, lightLevel);
-            return lightLevel;
+            const target = Math.max(propagatedLight, playerLight, emission);
+            const previous = this.data.get(x, y) ?? target;
+            const smoothed = lerp(previous, target, this.smoothing);
+            this.data.set(x, y, smoothed);
+            return smoothed;
         }
 
     }
